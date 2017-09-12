@@ -1,2 +1,0 @@
-# blogtest
-testing netlify build

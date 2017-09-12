@@ -1,0 +1,344 @@
+---
+title: Forecasting Divvy bikesharing traffic
+author: Keith Hultman
+date: '2017-06-01'
+slug: forecasting-divvy-bikesharing-traffic
+categories: [project]
+tags: [timeseries, forecasting, Chicago]
+subtitle: 'Comparing Exponential Smoothing, ARIMA, and Prophet to predict bikesharing traffic'
+bigimg: [{src: "img/feature-image-divvy.jpg", desc: "image: Tony Webster"}]
+---
+
+
+
+<div id="introduction" class="section level2">
+<h2>Introduction</h2>
+<p>Divvy is a bike sharing system for the city of Chicago that provides residents and tourists an option for getting around the city. After patrons purchase a daily or annual pass, they can unlock a bike, ride to their destination, and return the bike to one of the Divvy bike docking stations found throughout the city. The daily and annual pass includes 30 minutes of riding time, with additional fees for longer trips. The program is designed to promote short one-way trips to increase sharing of the bikes throughout the day. The program currently has 6,000 bikes at over 580 bike stations and there are similar bike sharing programs in other cities, including Montreal and Boston.</p>
+<p>The motivation to forecast Divvy bike use would be beneficial for Divvy’s operating company, Motivate, and the Chicago Department of Transportation for the following reasons.</p>
+<ol style="list-style-type: decimal">
+<li>Predicting the demand for the next season would aid plans on future expansion or price changes to opimize bike use and profitability.</li>
+<li>On a granular level, identifying the patterns of use for each bike station would allow the Divvy program to opimize bike placement and availability. Stations that are predicted to have increasing use can be expanded for additional Divvy bike slots, and it may be necessary to transport bikes from one station to another.</li>
+<li>The Divvy program can be used as a measure of transportation activity in the city and can tell us how people move about the city on a day-to-day and week-to-week basis.</li>
+</ol>
+</div>
+<div id="exploring-the-divvy-data" class="section level2">
+<h2>Exploring the Divvy data</h2>
+<p>This project will attempt to model the daily duration of Divvy rides for all bike stations in the city. The data was collected from the <a href="https://data.cityofchicago.org">City of Chicago Data Portal</a>. The original data was summarized using the Data Portal Filter by summing the daily duration of each trip, and then exported to a csv file. The summarized data is public and available <a href="https://data.cityofchicago.org/Transportation/Divy_daily_duration/3hs6-p2qv">here</a>. The duration is total hours of bike usage per day.</p>
+<pre class="r"><code>library(tidyverse)
+library(lubridate)
+library(forecast)
+library(knitr)
+library(xts)
+
+divvy &lt;- read_csv(&quot;divvy_daily_duration.csv&quot;)
+
+divvy$date &lt;- mdy(divvy$`START TIME`)
+divvy$`START TIME` &lt;- NULL
+divvy$duration &lt;- divvy$`TRIP DURATION`
+divvy$`TRIP DURATION` &lt;- NULL</code></pre>
+<p>First we will look at the overall time series and examine its features.</p>
+<pre class="r"><code>divvy_xts &lt;- xts(divvy$duration, order.by = divvy$date)
+fig1 &lt;- autoplot(divvy_xts) + ggtitle(&quot;Divvy daily ridership duration&quot;) + ylab(&quot;Hours per day&quot;) + xlab(&quot;Year&quot;)
+fig1</code></pre>
+<div class="figure">
+<img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Time%20series%20plot-1.png" alt="Divvy Bike Time Series" width="672" />
+<p class="caption">
+(#fig:Time series plot)Divvy Bike Time Series
+</p>
+</div>
+<p>We can see that ridership appears to have increased during the first three years of Divvy availability and possibly leveled off during 2016, the last year of available data. There is also clear yearly seasonality, which is expected given how difficult it is to ride a bicycle during Chicago’s winters.</p>
+<pre class="r"><code>divvy_ts &lt;- ts(divvy_xts, start = c(2013, 178), frequency = 365)
+fig2 &lt;- ggseasonplot(divvy_ts) + ggtitle(&quot;Seasonal plot of Divvy daily ridership&quot;)
+fig2</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Seasonal%20plot-1.png" width="672" /></p>
+<p>The first year of the Divvy program seems to have started slowly in the summer of 2013 and since then, summer has been a much more actively used time for the program. For this reason I will be only using 2014-2016 data.</p>
+<pre class="r"><code>divvy_ts &lt;- ts(divvy_xts, start = c(2014, 1), frequency = 365)
+divvy_xts &lt;- divvy_xts[&#39;2014/2017&#39;]
+divvy &lt;- filter(divvy, date &gt;= &quot;2014-01-01&quot;)</code></pre>
+<p>Since Divvy is used by many commuters, its possible there is also weekly seasonality as well. However, let’t take a closer look at 4 weeks of data in May 2016.</p>
+<pre class="r"><code>plot(divvy_xts[&#39;2016-05-01/2016-05-28&#39;])</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/unnamed-chunk-3-1.png" width="672" /></p>
+<p>During this time, there doesn’t appear to be any obvious weekly seasonality to the data. We can also examine the subseries plot for each week day over all years.</p>
+<pre class="r"><code>divvy_w_ts &lt;- ts(divvy_xts[&#39;2014-01-01/2016-12-31&#39;], start = c(2014, 1), frequency = 7)
+fig3 &lt;- ggsubseriesplot(divvy_w_ts) + ggtitle(&quot;Subseries plot for weekly seasonality&quot;)
+fig3</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Subseries%20plot-1.png" width="672" /></p>
+<p>This does look like there is some seasonality with the highest volume of traffic on Monday’s and Tuesdays.</p>
+<p>To explore annual trends we can combine the data into a weekly and monthly series.</p>
+<pre class="r"><code>divvy_w &lt;- divvy %&gt;% group_by(week = as.POSIXct(cut(date, &quot;week&quot;))) %&gt;% summarise(weekly_rides = sum(duration)) 
+divvy_m &lt;- divvy %&gt;% group_by(month = as.POSIXct(cut(date, &quot;month&quot;))) %&gt;% summarise(monthly_rides = sum(duration))</code></pre>
+<p>Let’s split out the latter half of 2016 as a test set so that we can examine how well our models forecast future Divvy bike rider duration.</p>
+<pre class="r"><code>divvy_d_test &lt;- divvy_xts[&#39;2016-07-01/2016-12-31&#39;]
+divvy_w_test &lt;- divvy_w %&gt;% filter(week &gt;= &quot;2016-07-01&quot;)
+divvy_m_test &lt;- divvy_m %&gt;% filter(month &gt;= &quot;2016-07-01&quot;)
+
+divvy_d_train &lt;- divvy_xts[&#39;2014/2016-07-01&#39;]
+divvy_w_train &lt;- divvy_w %&gt;% filter(week &lt; &quot;2016-07-01&quot;)
+divvy_m_train &lt;- divvy_m %&gt;% filter(month &lt; &quot;2016-07-01&quot;)
+
+divvy_m_train &lt;- xts(divvy_m_train$monthly_rides, order.by = divvy_m_train$month)</code></pre>
+</div>
+<div id="modeling-monthly" class="section level2">
+<h2>Modeling monthly</h2>
+<p>Let’s first try modeling the longer term series with monthly data, first with an auto ETS damped model.</p>
+<pre class="r"><code>d_ts &lt;- ts(divvy_m_train, start = 2014, frequency = 12)
+fit1 &lt;- ets(d_ts, damped = TRUE)
+summary(fit1)</code></pre>
+<pre><code>## ETS(A,Ad,N) 
+## 
+## Call:
+##  ets(y = d_ts, damped = TRUE) 
+## 
+##   Smoothing parameters:
+##     alpha = 0.9711 
+##     beta  = 0.9706 
+##     phi   = 0.8 
+## 
+##   Initial states:
+##     l = 20635973.97 
+##     b = 39426295.083 
+## 
+##   sigma:  69894089
+## 
+##      AIC     AICc      BIC 
+## 1197.785 1201.438 1206.193 
+## 
+## Training set error measures:
+##                   ME     RMSE      MAE      MPE    MAPE      MASE
+## Training set 6168957 69894089 51645030 7.894976 35.8655 0.8955505
+##                   ACF1
+## Training set 0.1098338</code></pre>
+<pre class="r"><code>fig4 &lt;- autoplot(forecast(fit1, h = 6))
+fig4</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/ETS-1.png" width="672" /></p>
+<p>This does not appear to be a good forecast, since there is no accounting for seasonality.</p>
+<pre class="r"><code>?ets
+fit1b &lt;- ets(d_ts, model = c(&quot;AAA&quot;), damped = TRUE)
+summary(fit1b)</code></pre>
+<pre><code>## ETS(A,Ad,A) 
+## 
+## Call:
+##  ets(y = d_ts, model = c(&quot;AAA&quot;), damped = TRUE) 
+## 
+##   Smoothing parameters:
+##     alpha = 0.0755 
+##     beta  = 1e-04 
+##     gamma = 0.9244 
+##     phi   = 0.98 
+## 
+##   Initial states:
+##     l = 193446765.697 
+##     b = 5152994.1269 
+##     s=-179142977 -152246416 -25321253 78782509 210768148 261071506
+##            174544061 110759629 -44819085 -145723334 -181035730 -107637058
+## 
+##   sigma:  38103138
+## 
+##      AIC     AICc      BIC 
+## 1185.384 1247.566 1210.606 
+## 
+## Training set error measures:
+##                    ME     RMSE      MAE       MPE     MAPE      MASE
+## Training set 753174.4 38103138 23033648 -24.60122 31.12008 0.3994149
+##                 ACF1
+## Training set 0.50219</code></pre>
+<pre class="r"><code>fc1 &lt;- forecast(fit1b, h = 6)
+plot(fc1, showgap = FALSE)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/unnamed-chunk-4-1.png" width="672" /></p>
+<p>This is much better, since our seasonality has a very large effect on the overall series.</p>
+<div id="arima" class="section level3">
+<h3>Arima</h3>
+<p>Next, we will try exploring a seasonal Arima model. First, let’s look at the ACF and PACF plots on the orininal series.</p>
+<pre class="r"><code>ggtsdisplay(divvy_m_train, main=&quot;Monthly Divvy Usage&quot;)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Arima%20plots-1.png" width="672" /></p>
+<p>This series is not stationary, in part because of the seasonality. Next I’ll examine a differenced series with a lag of 12 to remove the seasonality and determine whether that is stationary.</p>
+<pre class="r"><code>ggtsdisplay(diff(divvy_m_train, lag = 12))</code></pre>
+<pre><code>## Warning: Removed 12 rows containing missing values (geom_point).</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Differenced%20by%2012-1.png" width="672" /></p>
+<p>The PACF indicates that there is still autocorrelation from the previous lag. Taking a second difference with a lag of 1 should result in stationary series.</p>
+<pre class="r"><code>ggtsdisplay(diff(diff(divvy_m_train, lag = 12)))</code></pre>
+<pre><code>## Warning: Removed 13 rows containing missing values (geom_point).</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Differenced%20by%2012%20and%201-1.png" width="672" /></p>
+<p>Indeed, this now appears to be a stationary time series. This indicates we should model the series with an ARIMA with a nonseasonal differencing of 1 and a seasonal differencing of 12.</p>
+<pre class="r"><code>fit2 &lt;- Arima(divvy_m_train, order = c(0,1,1), seasonal = list(order = c(0,1,1), period = 12))
+fit3 &lt;- Arima(divvy_m_train, order = c(0,1,0), seasonal = list(order = c(0,1,1), period = 12))
+fit4 &lt;- Arima(divvy_m_train, order = c(0,1,1), seasonal = list(order = c(0,1,0), period = 12))
+fit5 &lt;- Arima(divvy_m_train, order = c(1,1,0), seasonal = list(order = c(0,1,0), period = 12))
+fit6 &lt;- Arima(divvy_m_train, order = c(2,1,0), seasonal = list(order = c(0,1,1), period = 12))
+fit7 &lt;- Arima(divvy_m_train, order = c(2,1,0), seasonal = list(order = c(0,1,2), period = 12))
+
+
+arima_comp &lt;- data.frame(ARIMA = c(&quot;(0,1,1)(0,1,1)12&quot;,
+                                   &quot;(0,1,0)(0,1,1)12&quot;,
+                                   &quot;(0,1,1)(0,1,0)12&quot;,
+                                   &quot;(1,1,0)(0,1,0)12&quot;,
+                                   &quot;(2,1,0)(0,1,1)12&quot;,
+                                   &quot;(2,1,0)(0,1,2)12&quot;),
+                         AIC = c(fit2$aic, fit3$aic, fit4$aic, fit5$aic, fit6$aic, fit7$aic))
+save(arima_comp, file = &quot;arima_comp.RData&quot;)
+kable(arima_comp)</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">ARIMA</th>
+<th align="right">AIC</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">(0,1,1)(0,1,1)12</td>
+<td align="right">649.5367</td>
+</tr>
+<tr class="even">
+<td align="left">(0,1,0)(0,1,1)12</td>
+<td align="right">648.0710</td>
+</tr>
+<tr class="odd">
+<td align="left">(0,1,1)(0,1,0)12</td>
+<td align="right">647.6083</td>
+</tr>
+<tr class="even">
+<td align="left">(1,1,0)(0,1,0)12</td>
+<td align="right">647.4803</td>
+</tr>
+<tr class="odd">
+<td align="left">(2,1,0)(0,1,1)12</td>
+<td align="right">651.0671</td>
+</tr>
+<tr class="even">
+<td align="left">(2,1,0)(0,1,2)12</td>
+<td align="right">653.0670</td>
+</tr>
+</tbody>
+</table>
+<p>The Arima model with the lowest AIC is an <span class="math inline">\(ARIMA(1,1,0)(0,1,0)_{12}\)</span></p>
+<pre class="r"><code>fc5 &lt;- forecast(fit5, h=6)
+plot(fc5, showgap = FALSE)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Arima%20forecast-1.png" width="672" /></p>
+</div>
+<div id="prophet" class="section level3">
+<h3>Prophet</h3>
+<p>I wanted to try out the new dynamic regression forecasting tool published by Facebook, called Prophet. It’s very easy to create a model using the Prophet package as there are very few parameters that you need to set.</p>
+<pre class="r"><code>library(prophet)</code></pre>
+<pre><code>## Loading required package: Rcpp</code></pre>
+<pre class="r"><code>divvy_m_prophet &lt;- data.frame(ds = divvy_m$month, y = divvy_m$monthly_rides)
+divvy_m_prophet &lt;- divvy_m_prophet %&gt;% filter(ds &lt; &quot;2016-07-01&quot;)
+m &lt;- prophet(divvy_m_prophet)</code></pre>
+<pre><code>## Warning in set_auto_seasonalities(m): Disabling weekly seasonality. Run
+## prophet with `weekly.seasonality=TRUE` to override this.</code></pre>
+<pre><code>## Initial log joint probability = -3.6839
+## Optimization terminated normally: 
+##   Convergence detected: absolute parameter change was below tolerance</code></pre>
+<pre class="r"><code>future &lt;- make_future_dataframe(m, periods = 6, freq = &#39;month&#39;)
+fc6 &lt;- predict(m, future)
+plot(m, fc6)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/unnamed-chunk-5-1.png" width="672" /></p>
+</div>
+<div id="model-comparison" class="section level3">
+<h3>Model comparison</h3>
+<pre class="r"><code>mo_comp &lt;- data.frame(actual = divvy_m_test$monthly_rides, ets = fc1$mean, arima = fc5$mean, prophet = tail(fc6$yhat))
+
+ets_sse &lt;- with(mo_comp, expr = sum((actual - ets)^2))
+arima_sse &lt;- with(mo_comp, expr = sum((actual - arima)^2))
+prophet_sse &lt;- with(mo_comp, expr = sum((actual - prophet)^2))
+mo_comp &lt;- data.frame(Model = c(&quot;TBATS&quot;, &quot;ARIMA&quot;, &quot;Prophet&quot;), &quot;SSE&quot; = c(ets_sse, arima_sse, prophet_sse))
+
+kable(mo_comp)</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Model</th>
+<th align="right">SSE</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">TBATS</td>
+<td align="right">1.386430e+16</td>
+</tr>
+<tr class="even">
+<td align="left">ARIMA</td>
+<td align="right">2.223434e+16</td>
+</tr>
+<tr class="odd">
+<td align="left">Prophet</td>
+<td align="right">9.838822e+15</td>
+</tr>
+</tbody>
+</table>
+<p>The prophet model has a lower SSE than the ets(A,Ad,A) model, which has a lower error rate than the <span class="math inline">\(ARIMA(1,1,0)(0,1,0)_{12}\)</span>. These forecasts might be useful for longer term trends, perhaps for planning on year-to-year changes. However, for more granular predictions, we need to explore the daily time series data.</p>
+</div>
+</div>
+<div id="modeling-daily-divvy-durration-within-the-year" class="section level2">
+<h2>Modeling daily Divvy durration within the year</h2>
+<div id="combined-ets-arma-for-double-seasonal-modeling" class="section level3">
+<h3>Combined ETS + ARMA for double seasonal modeling</h3>
+<p>Since the daily time series data have both a weekly and yearly seasonality, we need to use the msts function to specify our multiple seasons. We can then use a modeling method that will work with such multiple seasonality time series, such as a the tbats function for exponential smoothing.</p>
+<pre class="r"><code>divvy_d_msts &lt;- msts(divvy_d_train, seasonal.periods = c(7, 365.25))
+fit11 &lt;- tbats(divvy_d_msts)
+fc11 &lt;- forecast(fit11, h=184)
+plot(fc11)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/TBATS%20Daily-1.png" width="672" /></p>
+<p>This forecast looks quite good, especially how the predicted variance scales down as the predicted point values drop, which matches the variance in the time series.</p>
+<p>I am not aware of any ARIMA based methods that will work for complex seasonality, so next up is building a Prophet model.</p>
+</div>
+<div id="prophet-daily" class="section level3">
+<h3>Prophet daily</h3>
+<pre class="r"><code>divvy_d_prophet &lt;- data.frame(ds = divvy$date, y = divvy$duration)
+divvy_d_prophet_train &lt;- divvy_d_prophet %&gt;% filter(ds &lt; &quot;2016-07-01&quot;)
+
+d &lt;- prophet(divvy_d_prophet_train)</code></pre>
+<pre><code>## Initial log joint probability = -16.0823
+## Optimization terminated normally: 
+##   Convergence detected: relative gradient magnitude is below tolerance</code></pre>
+<pre class="r"><code>future &lt;- make_future_dataframe(d, periods = 184)
+fc13 &lt;- predict(d, future)
+plot(d, fc13)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Prophet%20Daily-1.png" width="672" /></p>
+<pre class="r"><code>prophet_plot_components(d, fc13)</code></pre>
+<p><img src="/post/2017-06-01-forecasting-divvy-bikesharing-traffic_files/figure-html/Prophet%20Daily-2.png" width="672" /></p>
+<p>Interestingly, the prophet package interprets our weekly seasonality as having higher demand on the weekends, which makes more intuitive sense. There might be an issue with how I defined the ts object and how it defines days of the weeks. While this potential ‘bug’ might affect our inference for the effect that any particular day of the week has on the estimate, it should not impact our overall forecasting ability.</p>
+<p>The Prophet model does not seem to show changing variance from summer to winter as the TBATS model did.</p>
+</div>
+<div id="model-comparison-and-selection" class="section level3">
+<h3>Model comparison and selection</h3>
+<pre class="r"><code>comparison &lt;- data.frame(actual = divvy_d_test, tbats = fc11$mean, prophet = tail(fc13$yhat, 184))
+
+tbats_sse &lt;- with(comparison, expr = sum((actual - tbats)^2))
+prophet_sse &lt;- with(comparison, expr = sum((actual - prophet)^2))
+
+tbats_sse_1mo &lt;- with(comparison[1:30,], expr = sum((actual - tbats)^2))
+prophet_sse_1mo &lt;- with(comparison[1:30,], expr = sum((actual - prophet)^2))
+
+comp &lt;- data.frame(Model = c(&quot;TBATS&quot;, &quot;Prophet&quot;), &quot;SSE.1Mo&quot; = c(tbats_sse_1mo, prophet_sse_1mo), &quot;SSE.6Mo&quot; = c(tbats_sse, prophet_sse))
+
+kable(comp)</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">Model</th>
+<th align="right">SSE.1Mo</th>
+<th align="right">SSE.6Mo</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">TBATS</td>
+<td align="right">9.629984e+14</td>
+<td align="right">3.481454e+15</td>
+</tr>
+<tr class="even">
+<td align="left">Prophet</td>
+<td align="right">6.540232e+14</td>
+<td align="right">2.559338e+15</td>
+</tr>
+</tbody>
+</table>
+<p>The Prophet model beats the TBATS model for both short (1-Month) estimates and longer term (6 month) estimates. These two models both incorporate the weekly and annual seasonality of the data. The Prophet model also seems to show an additional fluxuation to the fitted pattern that is not quite a monthly seasonality but very close.</p>
+</div>
+</div>
+<div id="conclusion-and-future-improvements" class="section level2">
+<h2>Conclusion and future improvements</h2>
+<p>The double seasonality of the Divvy data set required the use of advanced time series forecasting approaches, and precluded the use of simple exponential smoothing and autoregressive models. The new forecasting tool Prophet, created by Facebook, performs better than the TBATS function, from the Forecast package, in both short term and long term predictions. It also was the top model for long term monthly data as well.</p>
+<p>One additional feature that can be added to the Prophet model is the effect of specific holidays. The highest demand day in the data set was on July 4, 2015, a holiday which also fell on a Saturday. Other years had very high demand during the days around Independence Day as well, and this effect could be included in the model. Weather variables could also be incorporated into the model, such as temperature and precipitation. However, weather is not generally known far in advance and including those features might have limited forecasting potential.</p>
+</div>

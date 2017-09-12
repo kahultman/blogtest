@@ -1,16 +1,32 @@
 ---
-title: About me
-subtitle: Why you'd want to go on a date with me
+title: About Keith Hultman
+subtitle: A data scientist in Chicago 
 comments: false
+bigimg: [{src: "img/feature-image-data-blue-short.jpg"}]
 ---
 
-My name is Inigo Montoya. I have the following qualities:
+Keith is a data loving nerd with a background in genetics who was seduced by business applications of statistical models and A/B testing. He has over 10 years of experience as a molecular geneticist with a focus on computational biology and statistical methods. He is currently transitioning into data science consulting.
 
-- I rock a great mustache
-- I'm extremely loyal to my family
+[Download my Resume (PDF)](../../img/Hultman-Resume.pdf)
 
-What else do you need?
+### Scientific experience
 
-### my history
+* Extensive experience in generating original research ideas, following through with vigorous literature research, experimental design and execution
+* Expert geneticist with extensive experience in Next-Generation Sequencing and gene expression analysis
+* Wet-lab experience includes large-scale forward genetic mutant screens and pharmacogenetic interactions using small molecule drug discovery methods
 
-To be honest, I'm having some trouble remembering right now, so why don't you just watch [my movie](http://en.wikipedia.org/wiki/The_Princess_Bride_%28film%29) and it will answer **all** your questions.
+### Skills
+
+* *Data Analytic Methods:* Linear and logistic regression, supervised and unsupervised machine learning, A/B testing and hypothesis testing, and textual analysis
+* *Data Software:* Proficient in R, Excel, and Perl for data analysis and model testing; proficient in creating data visualizations using Excel, ggplot, and Tableau; experience with Microsoft SQL Server for database and data warehousing 
+* *Writing:* Proficient in technical writing with track record of peer-reviewed publications, grant writing, and editing
+* *Presenting:* Charismatic and confident public speaker with experience presenting to technical and lay audiences using Tableau and PowerPoint
+* *Other Software:* Proficient in Word, Camtasia (screen recording), Photoshop, and Illustrator; general programming fluency in Perl, C, Java, and Python
+
+He loves to rock climb whenever he gets the chance. 
+
+### Educational Background
+
+* **MS** Data Science, Elmhurst University, 2017
+* **PhD** Molecular Genetics and Genomics, Washington University in St. Louis, 2009
+* **BA** Biology, University of St. Thomas, 2001

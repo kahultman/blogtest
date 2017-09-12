@@ -1,0 +1,181 @@
+---
+title: "ReallyIsTrump Tweet Predictor"
+author: "Keith Hultman"
+date: '2017-07-10'
+slug: reallyistrump-tweet-predictor
+subtitle: ''
+tags:
+- twitter
+- sentiment analysis
+- tidytext
+- R
+categories: project
+---
+
+## Determining if tweets from @realDonaldTrump are written by the President or his staff
+
+Donald Trump's proclivity for using Twitter has changed how the White House interacts with the media and broadcasts to the president's followers. It's also lead to a birth of a new academic subject and hobby for data analysts. People have studied how [engagement has changed during his first 100 days](http://www.independent.co.uk/news/world/americas/us-politics/trump-twitter-less-popular-barack-obama-tweets-north-korea-china-shares-fake-news-a7709871.html) and conducted sentiment analysis of his tweets both during the campaign and as [president](http://www.npr.org/2017/04/30/526106612/what-we-learned-about-the-mood-of-trumps-tweets). There are data archives maintained for all of [realDonaldTrump's tweet history](http://www.trumptwitterarchive.com/) and for [just his deleted tweets](https://factba.se/topic/deleted-tweets), as he has been known to delete tweets [from](https://www.cnet.com/news/11-deleted-tweets-from-president-trumps-first-100-days/) [time](http://www.newsweek.com/trump-deletes-tweet-stating-honor-meet-mahmoud-abbas-595178) to [time](http://theweek.com/speedreads/702090/trump-tweets-deletes-comments-nato-gianforte). 
+
+David Robinson at Stack Overflow had a [fantastic analysis](http://varianceexplained.org/r/trump-tweets/) of Donald Trump's twitter history during the 2016 presidential campaign. He looked at the difference in tweets from Android devices versus an iPhone and concluded that they were written by different individuals and that Donald Trump was likely using the Android device. This was helpful in tracking which tweets were sent by the candidate himself and those written by his campaign staff. However, in March, the new [president stopped using his Android phone](http://fifthdomain.com/2017/03/29/president-trump-doesnt-use-an-andriod-anymore/) - due to security issues with his aging Android device. 
+
+While switching devices might be a boon for our nation's security, the public can no longer easily distinguish between a real *Donald J. Trump* tweet from a mere underling. Fortunately, David's work showed that the content and style of tweets were distinct between Trump and his staff, and these distinguishing characteristics could be used to predict whether it was written by the president himself. 
+
+## Analyzing @realDonaldTrump's recent twitter history
+
+I extracted recent tweets from @realDonaldTrump since the campaign and added them to David's original data set. All of the code from this project, including the script I used to extract tweets and the data themselves can be found at [my github repository](https://github.com/kahultman/trump-tweets). To repeat this partial analysis you can also load my data set using the code below.
+
+```{r load data}
+load(url("https://github.com/kahultman/trump-tweets/raw/master/data/alltweets-processed.Rdata"))
+```
+
+Let's take a look at a timeline of tweets from Android and iPhone devices.
+
+
+```{r timeline, message=FALSE, warning=FALSE}
+library(tidyverse)
+ggplot(alltweets2, aes(created, source)) + 
+  geom_jitter() +
+  ggtitle("Timeline of @realDonaldTrump twitter activity by source") +
+  xlab("Date of Tweet") + ylab("Source")
+```
+
+As was reported, @realDonaldTrump seems to have stopped using an Android phone in March. The last tweet from an Android phone was on March 8, 2017. 
+
+```{r last android tweets}
+alltweets2 %>%  
+  filter(source == "Android") %>% top_n(5, created) %>% 
+  select(text)
+```
+
+Since Trump is not tweeting from his Android phone anymore, can we use information in the tweets themselves to predict whether he personally wrote them? 
+
+## Extract features for modelling
+
+These are the features that were different between Android and non-Android that will be used to build the model. Most of these features were identified during David's initial analysis, here we are using them to build a predictive model.
+
+* Contains quotes (trump)
+* Contains image or url (not trump)
+* Contains hashtag
+* Time of day
+* Day of the week
+* Sentiment score on 10 emotional measures (anger, anticipation, disgust, fear, joy, negative, positive, sadness, surprise, trust) 
+
+## Build some predictive models
+
+To build a model based on the time frame when @realDonaldTrump was using an Android phone, I collected his tweets from Dec 14, 2015 to March 8, 2017. This analysis assumes that prior to March 8, Trump exclusively used his Android device for his tweets and his staff exclusively used an iPhone or other device. Of course, there probably are exceptions to this rule, for example if Trump grabbed his staff's iPhone for a quick tweet while his was on the charger. But this is an unbiased method for training our model. An alternative method would be to have humans classify whether they *think* the tweets were written by trump or not, in which case that model might be better at automatically classifying Trump-like tweets. However, it is just as likely that Trump occasionally writes an un-Trump-like tweet, or his staff attempt to emulate his phrasing. I therefore used the device-type variable (Android vs iPhone) as a proxy for our target variable: "trump" vs "not trump", for training some predictive models. I then randomly split the 2073 total tweets into a training and testing set with an 80:20 split while maintaining the ratio of "trump" to "not trump" tweets.
+
+I chose to use a naive Bayes model. I would like to incorporate a bag of words along with the previously mentioned features and the naive Bayes algorithm can handle the large number of categorical features a document term matrix would provide. It's also quite a fast algorithm which would allow for real-time implementation. In addition to the naive Bayes model, I also built a random forest model, which had similar performance to the naive Bayes prediction. 
+
+```{r naive bayes, message=FALSE, warning=FALSE}
+library(e1071)
+library(caret)
+
+convert_counts <- function(x){
+  x <- as.factor(ifelse(x > 0, "Yes", "No"))
+}
+
+alltweets2 <- alltweets2 %>% 
+  mutate_each(funs(convert_counts), starts_with("sentiment")) %>% 
+  mutate(tod = as.factor(tod))
+  
+# Split into training and test sets
+train_tweet <- alltweets2 %>% 
+  filter(date.time < "2017-03-08") %>% 
+  mutate(trump = as.factor(if_else(source == "Android", true = "trump", false = "not trump"))) %>% 
+  select(-source, -created, -date.time)
+
+set.seed(45)
+in_training <- createDataPartition(train_tweet$trump, times = 1, p = 0.8, list = FALSE)
+tweet_test <- train_tweet[-in_training,] 
+tweet_train <- train_tweet[in_training,] 
+
+# Train Naive Bayes Model
+tweet_nb <- naiveBayes(trump~., data = tweet_train[,3:18], laplace = 1)
+
+# Predict on test set
+tweet_test$nb_pred <- predict(tweet_nb, newdata = tweet_test)
+
+# Examine confustion matrix on test set 
+nb_cm <- confusionMatrix(tweet_test$nb_pred,tweet_test$trump, positive = "trump")
+nb_cm
+```
+
+The model's overall accuracy is ~86%. It's very good at classifying trump's actual tweets (~95% sensitivity) but will sometimes call a staff member's tweet as Trump's incorrectly (~77% Specificity). There were only 9 of Trump's tweets that we incorrectly classified as his staff's - let's take a look at them. 
+
+```{r false negatives}
+tweet_test %>% 
+  filter(trump == "trump", nb_pred == "not trump") %>% 
+  select(text)
+```
+
+By examining each variable and the naive Bayes model's conditional probabilities for each variable we can get a sense on why each tweet was predicted to be not trump. Six of them have pictures and hashtags, which heavily implicate a 'not trump' call. 
+
+Let's take a look at how the model has been classifying the tweets since March 8, 2017.
+
+```{r}
+load(url("https://github.com/kahultman/trump-tweets/raw/master/data/future.Rdata"))
+future <- future %>% 
+  mutate_each(funs(convert_counts), starts_with("sentiment")) %>% 
+  mutate(tod = as.factor(tod))
+
+future$nb_pred <- predict(tweet_nb, newdata = future, type = "class")
+table(future$nb_pred)
+```
+
+This is a much higher ratio of Trump tweets (70%) then what was observed in the training and test sets (49%). This could be a real change in pattern, or it could be that our model is better suited to distinguishing Trump from his campaign staff and not well suited to distinguishing him from his administration staff. So let's examine how the model classified tweets throughout the twitter feed timeline. We'll look at whether there has been a dramatic change in how it classifies tweets and make sure there isn't a difference in our predictive ability over time.
+
+```{r timeline of predictions, message=FALSE, warning=FALSE}
+library(lubridate)
+
+alltweets2_model <- alltweets2 %>% 
+  select(quote, picture, hashtag, dow, tod, starts_with("sentiment"), id, text, created, date.time, source)
+
+load(url("https://github.com/kahultman/trump-tweets/raw/master/data/tweet_nb.Rdata"))
+
+alltweets2_model$prediction <- predict(tweet_nb, newdata = alltweets2_model[,1:15])
+
+alltweets2_model %>% 
+  mutate(date = date(date.time)) %>% 
+  group_by(date, prediction, source) %>% 
+  summarise(daily_count = n()) %>% 
+  ggplot(aes(x=date, y=daily_count)) +
+  geom_line(aes(group = prediction, color= prediction)) +
+  facet_grid(source~.) +
+  ggtitle("Timeline of Naive Bayes classifier predictions of \n@realDonaldTrump twitter activity by source over time") +
+  xlab("Date of Tweet") + ylab("Tweets per day") 
+```
+
+We can also remake the jitter plot from above, but color-in how the model predicted each tweet. 
+
+```{r prediction jitter}
+ggplot(alltweets2_model, aes(date(date.time), source)) + 
+  geom_jitter(aes(color = prediction)) +
+  ggtitle("Naive Bayes classifier predictions of @realDonaldTrump twitter activity by source") +
+  xlab("Date of Tweet") + ylab("Source") 
+```
+
+It looks like there was definitely a flurry of activity during the campaign and a lot fewer non-trump tweets since he has been in office. Our current predictions are reasonably similar to the pre-March-08 time period, when we knew with some certainty which tweets were sent by his staff members. 
+
+There are several notable timepoints where twitter activity changes, which I annotate below. The first drop off occurs right around the time of David Robinson's analysis. It's possible that this drop off was because The Donald was ashamed after the 'unmasking' of his identity in his tweets and his negative twitter sentiment compared to his staff. However, it might be due to the difference in how we collected the data with the Twitter API. I suspect there is an issue in how much data I was able to obtain from the twitter API because my API searches would only return ~400 tweets at a time. I need to look into it further, since I could be missing some additional tweets. Perhaps converting the json files provided by the [Trump Twitter Archive](http://www.trumptwitterarchive.com/) would be a good way to double check the data. Twitter activity picks up again near the Access Hollywood tape release on October 7. Then it drops dramatically after the election - especially from the iPhone. The low activity continues through the transition and the iPhone usage from 'not trump' appears fairly stable once the Trump administration is sworn in. I think it's safe to say that there will be plenty of interesting opportunities for mining the presidential twitter feed in the future, as the account is still quite active and it appears that many of those tweets are likely coming from the president himself. 
+
+```{r prediction jitter with annotation}
+ggplot(alltweets2_model, aes(date(date.time), source)) + 
+  geom_jitter(aes(color = prediction)) +
+  ggtitle("Naive Bayes classifier predictions of @realDonaldTrump twitter activity by source") +
+  xlab("Date of Tweet") + ylab("Source") +
+  geom_vline(aes(xintercept = as.numeric(ymd("2016-11-08")))) +
+  geom_vline(aes(xintercept = as.numeric(ymd("2016-10-07")))) +
+  geom_vline(aes(xintercept = as.numeric(ymd("2017-03-08")))) +
+  geom_vline(aes(xintercept = as.numeric(ymd("2016-08-09")))) +
+  annotate(geom = "label", label = "Election Day", x= ymd("2016-11-08"), y = 1.4) +
+  annotate(geom = "label", label = "Access Hollywood", x= ymd("2016-10-07"), y = 1.5) +
+  annotate(geom = "label", label = "Last Android Use", x= ymd("2017-03-08"), y = 1) +
+  annotate(geom = "label", label = "Robinson", x= ymd("2016-08-09"), y = 1.6) 
+```
+
+## Deployment of the model via the @ReallyIsTrump Twitter bot
+
+To deploy the model's predictions on new tweets in near-real-time, I wrote an R script that culls the most recent tweets from @realDonaldTrump and predicts whether each was likely to be from Trump himself or his staff using the naive Bayes model on the above features. Tweets that are new and are predicted to be from Trump are then 'replied to' by my Twitter Bot [@ReallyIsTrump](https://twitter.com/ReallyIsTrump). You can follow both @realDonaldTrump and @ReallyIsTrump to see how the model is classifying each of his tweets. I would like to eventually have my script triggered by tweet activity, but for now I automated it by scheduling a cronjob to run my script every 10 minutes. Here is the most recent tweet from @realDonaldTrump that the model predicts as 'likely trump.'
+
+`r htmltools::HTML("{{< tweet 884379186361749504 >}}")`
+

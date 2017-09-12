@@ -1,0 +1,58 @@
+---
+title: "Hadoop Popularity"
+author: "keith_hultman"
+date: '2016-09-25'
+subtitle: 'Hive and Pig are no match for Spark'
+tags: [BigData]
+bigimg: [{src: "img/feature-image-electrophoresis.jpg"}]
+---
+
+
+
+<div id="exploring-the-popularity-of-pig-and-hive" class="section level2">
+<h2>Exploring the popularity of Pig and Hive</h2>
+<p>Pig and Hive are sometimes compared with one another for their ability to do data manipulations on a Hadoop cluster. There are some important differences. Hive is a direct implementation of the SQL language standard, which gives it a leg-up in terms of user familiarity. I wanted to see how the two compared in the number of posts on <a href="http://stackoverflow.com/">Stack Overflow</a> a popular question/answer site for software developers.</p>
+<p>I first found the most popular tag for the associated technologies at <a href="http://stackoverflow.com/tags">Stackoverflow</a>. Then I used the public data explorer on <a href="http://data.stackexchange.com/stackoverflow/query/440749/anonymous-feedback-votes-over-time-on-a-specific-tag?tagname=ocaml&amp;ref=survey-2016#graph">StackExchange</a> and entered the tags as queries. I then downloaded the csv file and brought it in to R for some visualizations.</p>
+<pre class="r"><code>library(tidyverse)</code></pre>
+<pre><code>## Loading tidyverse: ggplot2
+## Loading tidyverse: tibble
+## Loading tidyverse: tidyr
+## Loading tidyverse: readr
+## Loading tidyverse: purrr
+## Loading tidyverse: dplyr</code></pre>
+<pre><code>## Conflicts with tidy packages ----------------------------------------------</code></pre>
+<pre><code>## filter(): dplyr, stats
+## lag():    dplyr, stats</code></pre>
+<pre class="r"><code>pig &lt;- read.csv(&quot;pig.csv&quot;, header = TRUE)
+hive &lt;- read.csv(&quot;hive.csv&quot;, header = TRUE)
+pighive &lt;- rbind(pig, hive) #combine the data to one dataframe
+pighive$mo &lt;- strptime(x = as.character(pighive$mo), format = &quot;%Y-%m-%d %H:%M:%S&quot;)
+
+ggplot(pighive, aes(mo, Total.Votes)) +
+  geom_line(aes(color = TagName)) + 
+  ggtitle(&quot;Popularity of Pig vs Hive on Stack Overflow&quot;) +
+  ylab(&quot;Tag Votes&quot;) +
+  xlab(&quot;Time&quot;)</code></pre>
+<p><img src="/post/2016-09-25-hadoop-popularity_files/figure-html/unnamed-chunk-2-1.png" width="672" /></p>
+<p>The number of posts with apache-pig as the tag has plataeued and slightly droped from its peak in 2014. Hive has gained in popularity and has more than 3x the number of posts. Seems like a clear winner for Hive here.</p>
+</div>
+<div id="a-comparison-of-all-hadoop-related-technology-popularity" class="section level2">
+<h2>A comparison of all Hadoop-related technology popularity</h2>
+<p>How do the other Hadoop-related technologies compare?</p>
+<pre class="r"><code>hadoop &lt;- read.csv(&quot;hadoop.csv&quot;, header = TRUE)
+hbase &lt;- read.csv(&quot;hbase.csv&quot;, header = TRUE)
+spark &lt;- read.csv(&quot;spark.csv&quot;, header = TRUE)
+mahout &lt;- read.csv(&quot;mahout.csv&quot;, header = TRUE)
+mapreduce &lt;- read.csv(&quot;mapreduce.csv&quot;, header = TRUE)
+
+hadoop_all &lt;- rbind(hadoop, pig, hive, hbase, spark, mahout, mapreduce) #combine the data to one dataframe
+hadoop_all$mo &lt;- strptime(x = as.character(hadoop_all$mo), format = &quot;%Y-%m-%d %H:%M:%S&quot;)
+
+ggplot(hadoop_all, aes(mo, Total.Votes)) +
+  geom_line(aes(color = TagName)) + 
+  ggtitle(&quot;Popularity of Hadoop related technologies on Stack Overflow&quot;) +
+  ylab(&quot;Tag Votes&quot;) +
+  xlab(&quot;Time&quot;)</code></pre>
+<p><img src="/post/2016-09-25-hadoop-popularity_files/figure-html/unnamed-chunk-3-1.png" width="672" /></p>
+<p>Hive’s rise is completely dwarfed by the acceleration over the past year and half of Spark. Spark is tagged in twice the number of posts as the general Hadoop tag, a technology it was built upon. This has convinced me to put full effort into learning Spark going forward.</p>
+</div>
